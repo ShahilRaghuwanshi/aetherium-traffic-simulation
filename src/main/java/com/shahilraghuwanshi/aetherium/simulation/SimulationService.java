@@ -1,14 +1,15 @@
 package com.shahilraghuwanshi.aetherium.simulation;
 
 import com.shahilraghuwanshi.aetherium.model.Intersection;
-import com.shahilraghuwanshi.aetherium.model.Road; // Import Road
+import com.shahilraghuwanshi.aetherium.model.Road;
 import com.shahilraghuwanshi.aetherium.repository.IntersectionRepository;
-import com.shahilraghuwanshi.aetherium.repository.RoadRepository; // Import RoadRepository
+import com.shahilraghuwanshi.aetherium.repository.RoadRepository;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.annotation.Autowired; // <-- Import Autowired
 import org.springframework.stereotype.Service;
 
-import java.util.*; // Import necessary util classes
+import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -18,23 +19,30 @@ import java.util.concurrent.TimeUnit;
 public class SimulationService {
 
     private final IntersectionRepository intersectionRepository;
-    private final RoadRepository roadRepository; // Add RoadRepository
+    private final RoadRepository roadRepository;
+    private final SimulationWebSocketHandler webSocketHandler; // <-- ADD THIS FIELD
+
     private final List<Car> cars = new CopyOnWriteArrayList<>();
     private final Random random = new Random();
     private List<Intersection> allIntersections = new ArrayList<>();
-    private Map<Long, List<Intersection>> adjacencyList = new HashMap<>(); // Store road network
+    private Map<Long, List<Intersection>> adjacencyList = new HashMap<>();
 
     private ScheduledExecutorService scheduler;
-    private static final int SIMULATION_TICK_RATE_MS = 33; // Approx 30 times per second
+    private static final int SIMULATION_TICK_RATE_MS = 33;
 
-    // Constructor Injection (add RoadRepository)
-    public SimulationService(IntersectionRepository intersectionRepository, RoadRepository roadRepository) {
+    // --- UPDATE CONSTRUCTOR ---
+    @Autowired // <-- Add Autowired
+    public SimulationService(IntersectionRepository intersectionRepository,
+                             RoadRepository roadRepository,
+                             SimulationWebSocketHandler webSocketHandler) { // <-- ADD HANDLER PARAMETER
         this.intersectionRepository = intersectionRepository;
-        this.roadRepository = roadRepository; // Initialize RoadRepository
-        loadMapData(); // Load intersections and build adjacency list
+        this.roadRepository = roadRepository;
+        this.webSocketHandler = webSocketHandler; // <-- INITIALIZE HANDLER
+        loadMapData();
     }
+    // --- END CONSTRUCTOR UPDATE ---
 
-    // Load map data and build the adjacency list for pathfinding
+
     private void loadMapData() {
         allIntersections = intersectionRepository.findAll();
         List<Road> allRoads = roadRepository.findAll();
@@ -47,12 +55,9 @@ public class SimulationService {
             System.err.println("Warning: No roads found. Cannot build road network.");
         }
 
-        // Initialize adjacency list
         for (Intersection intersection : allIntersections) {
             adjacencyList.put(intersection.getId(), new ArrayList<>());
         }
-
-        // Populate adjacency list based on roads (bidirectional)
         for (Road road : allRoads) {
             if (road.getStartIntersection() != null && road.getEndIntersection() != null) {
                 adjacencyList.get(road.getStartIntersection().getId()).add(road.getEndIntersection());
@@ -62,27 +67,13 @@ public class SimulationService {
         System.out.println("Road network adjacency list built.");
     }
 
-    // --- A* Pathfinding Implementation ---
-
-    /**
-     * Finds the shortest path between two intersections using the A* algorithm.
-     * @param start The starting intersection.
-     * @param end The destination intersection.
-     * @return A list of intersections representing the path, or an empty list if no path is found.
-     */
+    // --- A* Pathfinding (Keep as is) ---
     public List<Intersection> findShortestPath(Intersection start, Intersection end) {
-        if (start == null || end == null || start.equals(end)) {
-            return Collections.emptyList();
-        }
-
-        // Priority queue stores nodes to visit, ordered by fCost
+        if (start == null || end == null || start.equals(end)) return Collections.emptyList();
         PriorityQueue<PathNode> openSet = new PriorityQueue<>();
-        // Set stores nodes already visited
         Set<Intersection> closedSet = new HashSet<>();
-        // Map stores the PathNode for each Intersection for quick lookup
         Map<Intersection, PathNode> nodeMap = new HashMap<>();
 
-        // Initialize start node
         PathNode startNode = new PathNode(start);
         startNode.setGCost(0);
         startNode.setHCost(calculateHeuristic(start, end));
@@ -91,115 +82,57 @@ public class SimulationService {
         openSet.add(startNode);
 
         while (!openSet.isEmpty()) {
-            PathNode current = openSet.poll(); // Get node with lowest fCost
-
-            // Path found! Reconstruct and return it.
-            if (current.getIntersection().equals(end)) {
-                return reconstructPath(current);
-            }
-
+            PathNode current = openSet.poll();
+            if (current.getIntersection().equals(end)) return reconstructPath(current);
             closedSet.add(current.getIntersection());
 
-            // Explore neighbors
             for (Intersection neighborIntersection : getNeighbors(current.getIntersection())) {
-                if (closedSet.contains(neighborIntersection)) {
-                    continue; // Skip already visited neighbors
-                }
-
+                if (closedSet.contains(neighborIntersection)) continue;
                 PathNode neighborNode = nodeMap.computeIfAbsent(neighborIntersection, PathNode::new);
-
                 double tentativeGCost = current.getGCost() + calculateDistance(current.getIntersection(), neighborIntersection);
 
-                // If this path to the neighbor is better than any previous path
                 if (tentativeGCost < neighborNode.getGCost()) {
                     neighborNode.setParent(current);
                     neighborNode.setGCost(tentativeGCost);
                     neighborNode.setHCost(calculateHeuristic(neighborIntersection, end));
                     neighborNode.setFCost(neighborNode.getGCost() + neighborNode.getHCost());
-
-                    // Add/update neighbor in the open set
-                    if (!openSet.contains(neighborNode)) {
-                        openSet.add(neighborNode);
-                    } else {
-                        // Re-add to update priority if cost changed (simple way, not most efficient)
-                        openSet.remove(neighborNode);
-                        openSet.add(neighborNode);
-                    }
+                    if (!openSet.contains(neighborNode)) openSet.add(neighborNode);
+                    else { openSet.remove(neighborNode); openSet.add(neighborNode); }
                 }
             }
         }
-
-        return Collections.emptyList(); // No path found
+        return Collections.emptyList();
     }
+    private List<Intersection> getNeighbors(Intersection intersection) { return adjacencyList.getOrDefault(intersection.getId(), Collections.emptyList()); }
+    private double calculateDistance(Intersection a, Intersection b) { double dx = a.getXCoordinate() - b.getXCoordinate(); double dy = a.getYCoordinate() - b.getYCoordinate(); return Math.sqrt(dx * dx + dy * dy); }
+    private double calculateHeuristic(Intersection from, Intersection to) { return calculateDistance(from, to); }
+    private List<Intersection> reconstructPath(PathNode endNode) { List<Intersection> path = new LinkedList<>(); PathNode current = endNode; while (current != null) { path.add(0, current.getIntersection()); current = current.getParent(); } return path; }
+    // --- End A* ---
 
-    // Helper: Get adjacent intersections based on the road network
-    private List<Intersection> getNeighbors(Intersection intersection) {
-        return adjacencyList.getOrDefault(intersection.getId(), Collections.emptyList());
-    }
-
-    // Helper: Calculate Euclidean distance (straight-line) between two intersections
-    private double calculateDistance(Intersection a, Intersection b) {
-        double dx = a.getXCoordinate() - b.getXCoordinate();
-        double dy = a.getYCoordinate() - b.getYCoordinate();
-        return Math.sqrt(dx * dx + dy * dy);
-    }
-
-    // Helper: Calculate heuristic cost (Euclidean distance to the end)
-    private double calculateHeuristic(Intersection from, Intersection to) {
-        return calculateDistance(from, to);
-    }
-
-    // Helper: Reconstruct the path from the end node back to the start
-    private List<Intersection> reconstructPath(PathNode endNode) {
-        List<Intersection> path = new LinkedList<>();
-        PathNode current = endNode;
-        while (current != null) {
-            path.add(0, current.getIntersection()); // Add to the beginning to reverse the path
-            current = current.getParent();
-        }
-        return path;
-    }
-
-
-    // --- Spawn Logic (Updated) ---
 
     public void spawnCar() {
         if (allIntersections.isEmpty() || allIntersections.size() < 2) {
             System.err.println("Cannot spawn car: Need at least two intersections.");
             return;
         }
-
         Intersection start = allIntersections.get(random.nextInt(allIntersections.size()));
         Intersection destination;
-        do {
-            destination = allIntersections.get(random.nextInt(allIntersections.size()));
-        } while (destination.getId().equals(start.getId()));
-
-        // *** Calculate the path using A* ***
+        do { destination = allIntersections.get(random.nextInt(allIntersections.size())); } while (destination.getId().equals(start.getId()));
         List<Intersection> path = findShortestPath(start, destination);
-
-        if (path.isEmpty() || path.size() < 2) {
-            System.err.println("Could not find a valid path for the car from " + start.getId() + " to " + destination.getId());
-            return; // Don't spawn if no path
-        }
-
-        // *** Create car WITH the path ***
+        if (path.isEmpty() || path.size() < 2) { System.err.println("Could not find a valid path for the car from " + start.getId() + " to " + destination.getId()); return; }
         Car newCar = new Car(start, path);
         cars.add(newCar);
-
         System.out.println("Spawned Car ID: " + newCar.getId() + " at (" + start.getXCoordinate() + "," + start.getYCoordinate() + ") Path length: " + path.size());
     }
 
 
     // --- Simulation Loop Logic (Updated) ---
-
     @PostConstruct
     public void startSimulationLoop() {
         scheduler = Executors.newSingleThreadScheduledExecutor();
         scheduler.scheduleAtFixedRate(this::updateSimulation, 0, SIMULATION_TICK_RATE_MS, TimeUnit.MILLISECONDS);
         System.out.println("Simulation loop started.");
     }
-
     @PreDestroy
     public void stopSimulationLoop() {
         if (scheduler != null && !scheduler.isShutdown()) {
@@ -209,19 +142,25 @@ public class SimulationService {
     }
 
     private void updateSimulation() {
-        double speed = 2.0; // Pixels per tick
+        double speed = 2.0;
+        boolean stateChanged = false; // Track if any car moved or arrived
 
-        for (Car car : cars) {
+        // Iterate using an iterator to safely remove cars while looping
+        Iterator<Car> iterator = cars.iterator();
+        while (iterator.hasNext()) {
+            Car car = iterator.next();
+
             if (car.hasReachedFinalDestination()) {
                 System.out.println("Car ID: " + car.getId() + " arrived at final destination.");
-                cars.remove(car); // Remove car when it finishes its path
+                iterator.remove(); // Safely remove car using iterator
+                stateChanged = true;
                 continue;
             }
 
-            // *** Get the NEXT intersection in the path ***
             Intersection target = car.getCurrentTargetIntersection();
-            if (target == null) { // Should not happen if path is valid
-                cars.remove(car);
+            if (target == null) {
+                iterator.remove(); // Remove car if target is somehow null
+                stateChanged = true;
                 continue;
             }
 
@@ -230,28 +169,45 @@ public class SimulationService {
             double distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
 
             if (distance < speed) {
-                // Arrived at the current target intersection
                 car.setX(target.getXCoordinate());
                 car.setY(target.getYCoordinate());
-                // *** Advance to the NEXT intersection in the path ***
                 car.advanceToNextTarget();
                 System.out.println("Car ID: " + car.getId() + " reached intersection " + target.getId());
+                stateChanged = true;
             } else {
-                // Move towards the current target intersection
                 double normalizedX = deltaX / distance;
                 double normalizedY = deltaY / distance;
                 double moveX = normalizedX * speed;
                 double moveY = normalizedY * speed;
-
                 car.setX(car.getX() + moveX);
                 car.setY(car.getY() + moveY);
+                stateChanged = true; // Car position updated
             }
         }
+
+        // --- ADD THIS BLOCK ---
+        // If any car moved or was removed, broadcast the new state
+        if (stateChanged) {
+            webSocketHandler.broadcast(getCars()); // Send current car list to all clients
+        }
+        // --- END ADDED BLOCK ---
     }
+    // --- End Simulation Loop ---
 
 
-    // Method to get the current list of cars (for sending to frontend later)
     public List<Car> getCars() {
-        return new ArrayList<>(cars); // Return a copy
+        // Return a copy to prevent external modification issues during JSON serialization
+        List<Car> carCopy = new ArrayList<>();
+        for (Car car : cars) {
+            // Create a simple copy (adjust if Car becomes more complex)
+            Car copy = new Car(car.getPath().get(0), new ArrayList<>(car.getPath())); // Recreate with path start
+            copy.setId(car.getId());
+            copy.setX(car.getX());
+            copy.setY(car.getY());
+            copy.setCurrentPathIndex(car.getCurrentPathIndex());
+            carCopy.add(copy);
+        }
+        return carCopy;
+        // Or simpler if direct list is okay: return new ArrayList<>(cars);
     }
 }
