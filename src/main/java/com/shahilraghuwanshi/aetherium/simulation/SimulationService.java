@@ -6,7 +6,7 @@ import com.shahilraghuwanshi.aetherium.repository.IntersectionRepository;
 import com.shahilraghuwanshi.aetherium.repository.RoadRepository;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
-import org.springframework.beans.factory.annotation.Autowired; // <-- Import Autowired
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -20,7 +20,7 @@ public class SimulationService {
 
     private final IntersectionRepository intersectionRepository;
     private final RoadRepository roadRepository;
-    private final SimulationWebSocketHandler webSocketHandler; // <-- ADD THIS FIELD
+    private final SimulationWebSocketHandler webSocketHandler;
 
     private final List<Car> cars = new CopyOnWriteArrayList<>();
     private final Random random = new Random();
@@ -28,20 +28,18 @@ public class SimulationService {
     private Map<Long, List<Intersection>> adjacencyList = new HashMap<>();
 
     private ScheduledExecutorService scheduler;
-    private static final int SIMULATION_TICK_RATE_MS = 33;
+    private static final int SIMULATION_TICK_RATE_MS = 33; // Approx 30 times per second
+    private static final int MAX_CARS = 50; // Maximum number of cars allowed
 
-    // --- UPDATE CONSTRUCTOR ---
-    @Autowired // <-- Add Autowired
+    @Autowired
     public SimulationService(IntersectionRepository intersectionRepository,
                              RoadRepository roadRepository,
-                             SimulationWebSocketHandler webSocketHandler) { // <-- ADD HANDLER PARAMETER
+                             SimulationWebSocketHandler webSocketHandler) {
         this.intersectionRepository = intersectionRepository;
         this.roadRepository = roadRepository;
-        this.webSocketHandler = webSocketHandler; // <-- INITIALIZE HANDLER
+        this.webSocketHandler = webSocketHandler;
         loadMapData();
     }
-    // --- END CONSTRUCTOR UPDATE ---
-
 
     private void loadMapData() {
         allIntersections = intersectionRepository.findAll();
@@ -55,9 +53,11 @@ public class SimulationService {
             System.err.println("Warning: No roads found. Cannot build road network.");
         }
 
+        // Initialize adjacency list
         for (Intersection intersection : allIntersections) {
             adjacencyList.put(intersection.getId(), new ArrayList<>());
         }
+        // Populate adjacency list based on roads (bidirectional)
         for (Road road : allRoads) {
             if (road.getStartIntersection() != null && road.getEndIntersection() != null) {
                 adjacencyList.get(road.getStartIntersection().getId()).add(road.getEndIntersection());
@@ -122,7 +122,7 @@ public class SimulationService {
         if (path.isEmpty() || path.size() < 2) { System.err.println("Could not find a valid path for the car from " + start.getId() + " to " + destination.getId()); return; }
         Car newCar = new Car(start, path);
         cars.add(newCar);
-        System.out.println("Spawned Car ID: " + newCar.getId() + " at (" + start.getXCoordinate() + "," + start.getYCoordinate() + ") Path length: " + path.size());
+        // System.out.println("Spawned Car ID: " + newCar.getId() + " at (" + start.getXCoordinate() + "," + start.getYCoordinate() + ") Path length: " + path.size()); // Optional detailed spawn log
     }
 
 
@@ -142,24 +142,31 @@ public class SimulationService {
     }
 
     private void updateSimulation() {
-        double speed = 2.0;
-        boolean stateChanged = false; // Track if any car moved or arrived
+        // Spawn new cars periodically if below the limit
+        boolean spawnedNewCar = false;
+        if (cars.size() < MAX_CARS && random.nextInt(100) < 5) { // Approx 5% chance each tick to spawn
+            spawnCar();
+            spawnedNewCar = true; // Mark that a car was potentially spawned
+        }
 
-        // Iterate using an iterator to safely remove cars while looping
+        double speed = 2.0;
+        boolean stateChanged = spawnedNewCar; // Start tracking if state changed (spawn counts)
+
+        // Use iterator for safe removal
         Iterator<Car> iterator = cars.iterator();
         while (iterator.hasNext()) {
             Car car = iterator.next();
 
             if (car.hasReachedFinalDestination()) {
-                System.out.println("Car ID: " + car.getId() + " arrived at final destination.");
-                iterator.remove(); // Safely remove car using iterator
+                // System.out.println("Car ID: " + car.getId() + " arrived at final destination."); // Optional arrival log
+                iterator.remove();
                 stateChanged = true;
                 continue;
             }
 
             Intersection target = car.getCurrentTargetIntersection();
             if (target == null) {
-                iterator.remove(); // Remove car if target is somehow null
+                iterator.remove();
                 stateChanged = true;
                 continue;
             }
@@ -172,7 +179,7 @@ public class SimulationService {
                 car.setX(target.getXCoordinate());
                 car.setY(target.getYCoordinate());
                 car.advanceToNextTarget();
-                System.out.println("Car ID: " + car.getId() + " reached intersection " + target.getId());
+                // System.out.println("Car ID: " + car.getId() + " reached intersection " + target.getId()); // Optional intersection log
                 stateChanged = true;
             } else {
                 double normalizedX = deltaX / distance;
@@ -185,21 +192,21 @@ public class SimulationService {
             }
         }
 
-        // --- ADD THIS BLOCK ---
-        // If any car moved or was removed, broadcast the new state
-        if (stateChanged) {
-            webSocketHandler.broadcast(getCars()); // Send current car list to all clients
-        }
-        // --- END ADDED BLOCK ---
+        // --- TEMPORARY CHANGE FOR DEBUGGING ---
+        // Always broadcast the current state on every tick, regardless of stateChanged
+        webSocketHandler.broadcast(getCars());
+        // --- END TEMPORARY CHANGE ---
+
     }
     // --- End Simulation Loop ---
 
 
     public List<Car> getCars() {
-        // Return a copy to prevent external modification issues during JSON serialization
+        // Return a copy for thread safety when broadcasting
         List<Car> carCopy = new ArrayList<>();
         for (Car car : cars) {
             // Create a simple copy (adjust if Car becomes more complex)
+            if (car.getPath() == null || car.getPath().isEmpty()) continue; // Skip cars with no path (shouldn't happen)
             Car copy = new Car(car.getPath().get(0), new ArrayList<>(car.getPath())); // Recreate with path start
             copy.setId(car.getId());
             copy.setX(car.getX());
@@ -208,6 +215,5 @@ public class SimulationService {
             carCopy.add(copy);
         }
         return carCopy;
-        // Or simpler if direct list is okay: return new ArrayList<>(cars);
     }
 }
