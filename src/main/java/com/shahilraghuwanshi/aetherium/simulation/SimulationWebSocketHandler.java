@@ -35,9 +35,23 @@ public class SimulationWebSocketHandler extends TextWebSocketHandler {
 
     // This method sends a message (our simulation state) to ALL connected clients
     public void broadcast(List<Car> cars) {
+        // --- ADD DEBUG LINES ---
+        System.out.println("Attempting to broadcast. Number of cars: " + (cars != null ? cars.size() : "null"));
+        if (cars == null || cars.isEmpty()) {
+            // Don't try to send if there's nothing to send (or print why)
+            System.out.println("Skipping broadcast: Car list is null or empty.");
+            // return; // Optional: uncomment if you don't want to send empty arrays
+        }
+        // --- END DEBUG LINES ---
+
         try {
             // Convert the list of cars to a JSON string
             String carsJson = objectMapper.writeValueAsString(cars);
+
+            // --- ADD DEBUG LINE ---
+            System.out.println("Broadcasting JSON: " + carsJson);
+            // --- END DEBUG LINE ---
+
             TextMessage message = new TextMessage(carsJson);
 
             // Send the message to each session
@@ -47,7 +61,10 @@ public class SimulationWebSocketHandler extends TextWebSocketHandler {
                 }
             }
         } catch (IOException e) {
-            System.err.println("Error broadcasting WebSocket message: " + e.getMessage());
+            // --- IMPROVE ERROR LOGGING ---
+            System.err.println("!!! Error broadcasting WebSocket message: " + e.getMessage());
+            e.printStackTrace(); // Print the full error stack trace
+            // --- END IMPROVED LOGGING ---
         }
     }
 
