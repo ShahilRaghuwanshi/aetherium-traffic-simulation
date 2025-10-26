@@ -28,6 +28,7 @@ public class SimulationService {
     private Map<Long, List<Intersection>> adjacencyList = new HashMap<>();
 
     private ScheduledExecutorService scheduler;
+
     private static final int SIMULATION_TICK_RATE_MS = 33; // Approx 30 times per second
     private static final int MAX_CARS = 50; // Maximum number of cars allowed
 
