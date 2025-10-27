@@ -4,6 +4,8 @@ import com.shahilraghuwanshi.aetherium.model.Intersection;
 import com.shahilraghuwanshi.aetherium.model.Road;
 import com.shahilraghuwanshi.aetherium.repository.IntersectionRepository;
 import com.shahilraghuwanshi.aetherium.repository.RoadRepository;
+import com.shahilraghuwanshi.aetherium.repository.TrafficLightRepository; // Added import
+import com.shahilraghuwanshi.aetherium.model.TrafficLight; // Added import
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,30 +23,35 @@ public class SimulationService {
     private final IntersectionRepository intersectionRepository;
     private final RoadRepository roadRepository;
     private final SimulationWebSocketHandler webSocketHandler;
+    private final TrafficLightRepository trafficLightRepository; // Added field
 
     private final List<Car> cars = new CopyOnWriteArrayList<>();
     private final Random random = new Random();
     private List<Intersection> allIntersections = new ArrayList<>();
     private Map<Long, List<Intersection>> adjacencyList = new HashMap<>();
+    private List<TrafficLight> allTrafficLights = new ArrayList<>(); // Added list for traffic lights
 
     private ScheduledExecutorService scheduler;
-
     private static final int SIMULATION_TICK_RATE_MS = 33; // Approx 30 times per second
+    private static final double SIMULATION_TICK_RATE_SECONDS = SIMULATION_TICK_RATE_MS / 1000.0; // Tick rate in seconds
     private static final int MAX_CARS = 50; // Maximum number of cars allowed
 
     @Autowired
     public SimulationService(IntersectionRepository intersectionRepository,
                              RoadRepository roadRepository,
-                             SimulationWebSocketHandler webSocketHandler) {
+                             SimulationWebSocketHandler webSocketHandler,
+                             TrafficLightRepository trafficLightRepository) { // Added repository
         this.intersectionRepository = intersectionRepository;
         this.roadRepository = roadRepository;
         this.webSocketHandler = webSocketHandler;
+        this.trafficLightRepository = trafficLightRepository; // Initialize repository
         loadMapData();
     }
 
     private void loadMapData() {
         allIntersections = intersectionRepository.findAll();
         List<Road> allRoads = roadRepository.findAll();
+        allTrafficLights = trafficLightRepository.findAll(); // Load traffic lights
 
         if (allIntersections.isEmpty()) {
             System.err.println("Warning: No intersections found. Cannot build road network.");
@@ -66,6 +73,7 @@ public class SimulationService {
             }
         }
         System.out.println("Road network adjacency list built.");
+        System.out.println("Loaded " + allTrafficLights.size() + " traffic lights."); // Log count
     }
 
     // --- A* Pathfinding (Keep as is) ---
@@ -150,25 +158,44 @@ public class SimulationService {
             spawnedNewCar = true; // Mark that a car was potentially spawned
         }
 
+        // Update Traffic Lights
+        boolean trafficLightChanged = false;
+        for (TrafficLight light : allTrafficLights) {
+            if (light.updateState(SIMULATION_TICK_RATE_SECONDS)) { // Pass delta time in seconds
+                trafficLightChanged = true;
+            }
+        }
+
         double speed = 2.0;
-        boolean stateChanged = spawnedNewCar; // Start tracking if state changed (spawn counts)
+        boolean carsMovedOrRemoved = false; // Track car state changes separately
 
         // Use iterator for safe removal
         Iterator<Car> iterator = cars.iterator();
         while (iterator.hasNext()) {
             Car car = iterator.next();
 
+            // Basic Traffic Light Check (will be enhanced later)
+            Intersection nextIntersection = car.getCurrentTargetIntersection();
+            if (nextIntersection != null && nextIntersection.isHasTrafficLight()) {
+                TrafficLight lightAtIntersection = findTrafficLightAt(nextIntersection);
+                if (lightAtIntersection != null) {
+                    // TODO: Add logic here later to check light state and potentially stop the car
+                    // System.out.println("Car " + car.getId() + " approaching light " + lightAtIntersection.getId() + " state: " + lightAtIntersection.getCurrentState());
+                }
+            }
+
+
             if (car.hasReachedFinalDestination()) {
                 // System.out.println("Car ID: " + car.getId() + " arrived at final destination."); // Optional arrival log
                 iterator.remove();
-                stateChanged = true;
+                carsMovedOrRemoved = true;
                 continue;
             }
 
             Intersection target = car.getCurrentTargetIntersection();
             if (target == null) {
                 iterator.remove();
-                stateChanged = true;
+                carsMovedOrRemoved = true;
                 continue;
             }
 
@@ -181,7 +208,7 @@ public class SimulationService {
                 car.setY(target.getYCoordinate());
                 car.advanceToNextTarget();
                 // System.out.println("Car ID: " + car.getId() + " reached intersection " + target.getId()); // Optional intersection log
-                stateChanged = true;
+                carsMovedOrRemoved = true;
             } else {
                 double normalizedX = deltaX / distance;
                 double normalizedY = deltaY / distance;
@@ -189,17 +216,29 @@ public class SimulationService {
                 double moveY = normalizedY * speed;
                 car.setX(car.getX() + moveX);
                 car.setY(car.getY() + moveY);
-                stateChanged = true; // Car position updated
+                carsMovedOrRemoved = true; // Car position updated
             }
         }
 
         // --- TEMPORARY CHANGE FOR DEBUGGING ---
-        // Always broadcast the current state on every tick, regardless of stateChanged
+        // Always broadcast the current state on every tick, regardless of state changes
+        // TODO: Later, change this back to: if (spawnedNewCar || carsMovedOrRemoved || trafficLightChanged)
         webSocketHandler.broadcast(getCars());
         // --- END TEMPORARY CHANGE ---
 
     }
     // --- End Simulation Loop ---
+
+    // Helper method to find traffic light at an intersection
+    private TrafficLight findTrafficLightAt(Intersection intersection) {
+        if (intersection == null) return null;
+        for (TrafficLight light : allTrafficLights) {
+            if (light.getIntersection() != null && light.getIntersection().getId().equals(intersection.getId())) {
+                return light;
+            }
+        }
+        return null;
+    }
 
 
     public List<Car> getCars() {
